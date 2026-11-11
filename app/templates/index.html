@@ -31,6 +31,15 @@
         <a class="btn ghost" href="{{ sample_error_url }}" target="_blank" rel="noopener">新窗口查看</a>
       </form>
     </li>
+    <li>
+      <strong>可供水量示例：</strong>每库一行、可供水量为整数（万立方米）的公示页，
+      转换后可继续演示「供水分配」全流程（选可供水量列 → 录入灌区 → 字典序最大满足率求解）。
+      <form action="{{ url_for('fetch') }}" method="post">
+        <input type="hidden" name="url" value="{{ sample_supply_url }}">
+        <button type="submit" class="btn">使用可供水量示例页</button>
+        <a class="btn ghost" href="{{ sample_supply_url }}" target="_blank" rel="noopener">新窗口查看</a>
+      </form>
+    </li>
   </ul>
 </section>
 {% endblock %}

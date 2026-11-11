@@ -53,4 +53,30 @@
     <a class="btn ghost" href="{{ url_for('index') }}">← 采集新页面</a>
   </div>
 </section>
+
+<section class="card">
+  <h2>第四步（可选）：供水分配</h2>
+  <p class="hint">
+    从转换结果中按列位置选择「可供水量」列进入供水分配页。该列每个正文行读出一座水库：
+    数值须为<strong>非负整数</strong>（单位统一按<strong>万立方米</strong>处理），
+    水库最多 <strong>6</strong> 座，<strong>同名水库将被拒绝</strong>。
+  </p>
+  {% if parsed.width >= 2 %}
+  <form action="{{ url_for('allocate_start') }}" method="post" class="table-actions">
+    <input type="hidden" name="result_key" value="{{ result_key }}">
+    <label>可供水量列：
+      <select name="column">
+        {% for p in parsed.header_paths %}
+        {% if not loop.first %}
+        <option value="{{ loop.index }}">第 {{ loop.index }} 列：{{ p or '（空路径）' }}</option>
+        {% endif %}
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn primary">进入供水分配页 →</button>
+  </form>
+  {% else %}
+  <p class="hint">表宽仅 1 列（水库名列），没有可作为可供水量的观测列。</p>
+  {% endif %}
+</section>
 {% endblock %}

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}供水分配 · 最优结果{% endblock %}
+{% block body %}
+<section class="card">
+  <h2>供水分配结果（字典序最大满足率）</h2>
+  <p class="hint">
+    来源页：<a href="{{ source_url }}" target="_blank" rel="noopener" class="src-url">{{ source_url }}</a><br>
+    可供水量列：第 {{ column }} 列{% if header_path %}（<code>{{ header_path }}</code>）{% endif %}
+    · 所有水量与满足率均以最简分数表示（分母为 1 时写作整数），单位：{{ unit }}
+  </p>
+
+  <h3>升序满足率向量（已求字典序最大）</h3>
+  <p class="vector">
+    (
+    {%- for item in sorted_items -%}
+      {{ item.rate | frac }}<span class="vector-name">（{{ item.name }}）</span>{% if not loop.last %} ≤ {% endif %}
+    {%- endfor -%}
+    )
+  </p>
+
+  <div class="stat-row">
+    <div class="stat"><span class="num">{{ total_supply }}</span><span class="lbl">可供水量合计（{{ unit }}）</span></div>
+    <div class="stat"><span class="num">{{ total_demand }}</span><span class="lbl">需水量合计（{{ unit }}）</span></div>
+    <div class="stat"><span class="num">{{ total_received | frac }}</span><span class="lbl">实际分配合计（{{ unit }}）</span></div>
+    <div class="stat"><span class="num">{{ total_gap | frac }}</span><span class="lbl">缺口合计（{{ unit }}）</span></div>
+  </div>
+
+  <h3>各灌区满足率与缺口</h3>
+  <div class="mini-scroll">
+    <table class="result-table">
+      <thead>
+        <tr>
+          <th>灌区</th><th>需水量</th><th>所得水量</th>
+          <th>满足率</th><th>缺口</th><th>可供水库</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in district_rows %}
+        <tr>
+          <td>
+            {{ d.name }}
+            {% if d.no_source %}<span class="tag-warn">无水源</span>{% endif %}
+          </td>
+          <td>{{ d.demand }}</td>
+          <td>{{ d.received | frac }}</td>
+          <td><strong>{{ d.rate | frac }}</strong></td>
+          <td>{{ d.gap | frac }}</td>
+          <td>{{ d.sources_text }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h3>水库 → 灌区 分配水量（{{ unit }}）</h3>
+  <div class="mini-scroll">
+    <table class="result-table">
+      <thead>
+        <tr>
+          <th>水库</th><th>可供水量</th>
+          {% for d in districts %}<th>{{ d.name }}</th>{% endfor %}
+          <th>合计供水</th><th>剩余</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in matrix_rows %}
+        <tr>
+          <td>{{ r.name }}</td>
+          <td>{{ r.supply }}</td>
+          {% for c in r.cells %}
+          <td class="{{ 'zero-cell' if c == 0 else '' }}">{{ c | frac }}</td>
+          {% endfor %}
+          <td>{{ r.used | frac }}</td>
+          <td>{{ r.left | frac }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">
+    满足率 = 所得水量 ÷ 需水量；缺口 = 需水量 − 所得水量。
+    最优分配不唯一时，本表给出其中一组实现该满足率向量的分配方案。
+  </p>
+
+  <div class="table-actions">
+    <a class="btn" href="{{ url_for('allocate_page', key=alloc_key) }}">← 调整灌区重新求解</a>
+    <a class="btn ghost" href="{{ url_for('preview', key=result_key) }}">返回转换结果</a>
+    <a class="btn ghost" href="{{ url_for('index') }}">采集新页面</a>
+  </div>
+</section>
+{% endblock %}

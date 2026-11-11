@@ -1,4 +1,5 @@
-"""Flask 采集入口：抓取公示页 → 选择表格/表头行数 → 预览 → 下载 CSV。"""
+"""Flask 采集入口：抓取公示页 → 选择表格/表头行数 → 预览 → 下载 CSV；
+以及供水分配页：从转换结果选可供水量列 → 录入灌区 → 字典序最大满足率求解。"""
 
 from __future__ import annotations
 
@@ -6,6 +7,8 @@ import csv
 import io
 import time
 import urllib.parse
+from fractions import Fraction
+from types import SimpleNamespace
 from typing import Optional
 
 import requests
@@ -20,6 +23,14 @@ from flask import (
     url_for,
 )
 
+from .allocation import (
+    MAX_DISTRICTS,
+    UNIT,
+    AllocationError,
+    parse_supply_column,
+    solve_allocation,
+    validate_districts,
+)
 from .grid_parser import (
     TableParseError,
     lenient_matrix,
@@ -35,7 +46,17 @@ _FETCH_MAX = 50
 
 SAMPLE_URL = "/sample/notice.html"
 SAMPLE_ERROR_URL = "/sample/notice_error.html"
+SAMPLE_SUPPLY_URL = "/sample/notice_supply.html"
 USER_AGENT = "HydroTableCollector/1.0 (+reservoir bulletin archiver)"
+
+
+@app.template_filter("frac")
+def frac_filter(value) -> str:
+    """最简分数展示：分母为 1 时写作整数，否则 ``分子/分母``。"""
+    f = Fraction(value)
+    if f.denominator == 1:
+        return str(f.numerator)
+    return f"{f.numerator}/{f.denominator}"
 
 
 def _cache_put(key: str, payload: dict) -> None:
@@ -137,6 +158,7 @@ def index():
         "index.html",
         sample_url=SAMPLE_URL,
         sample_error_url=SAMPLE_ERROR_URL,
+        sample_supply_url=SAMPLE_SUPPLY_URL,
     )
 
 
@@ -274,6 +296,204 @@ def download():
             "Content-Disposition":
                 f"attachment; filename={fname}; filename*=UTF-8''{quoted}"
         },
+    )
+
+
+@app.get("/preview")
+def preview():
+    """按结果 key 回看转换结果预览（供水分配页之间往返用）。"""
+    result_key = request.args.get("key", "")
+    cached = _cache_get(result_key)
+    if cached is None or "records" not in cached:
+        return render_template(
+            "error.html",
+            message="转换结果会话已过期，请重新抓取并转换。",
+            stage="预览",
+        ), 400
+    parsed = SimpleNamespace(
+        width=cached["width"],
+        total_rows=cached["total_rows"],
+        header_rows=cached["header_rows"],
+        header_paths=cached["header_paths"],
+    )
+    return render_template(
+        "preview.html",
+        result_key=result_key,
+        url=cached["url"],
+        parsed=parsed,
+        records=cached["records"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# 供水分配
+# ---------------------------------------------------------------------------
+
+def _render_allocate_input(alloc_key: str, cached: dict, **extra):
+    """渲染灌区录入页；extra 可传 error / prefill 等。"""
+    prefill = extra.pop("prefill", None)
+    if prefill is None:
+        prefill = cached.get("last_rows", [])
+    initial_rows = prefill or [{"name": "", "demand": "", "sources": []}
+                               for _ in range(3)]
+    return render_template(
+        "allocate.html",
+        alloc_key=alloc_key,
+        reservoirs=cached["reservoirs"],
+        reservoir_names=[r.name for r in cached["reservoirs"]],
+        source_url=cached["url"],
+        column=cached["column"],
+        header_path=cached["header_path"],
+        result_key=cached["result_key"],
+        max_districts=MAX_DISTRICTS,
+        unit=UNIT,
+        initial_rows=initial_rows,
+        error=extra.pop("error", None),
+    )
+
+
+@app.post("/allocate/start")
+def allocate_start():
+    """从转换结果按列位置选定可供水量列，进入供水分配页。"""
+    result_key = request.form.get("result_key", "")
+    cached = _cache_get(result_key)
+    if cached is None or "records" not in cached:
+        return render_template(
+            "error.html",
+            message="转换结果会话已过期，请重新抓取并转换后再选择可供水量列。",
+            stage="供水分配",
+        ), 400
+
+    try:
+        column = int(request.form.get("column", ""))
+    except (TypeError, ValueError):
+        column = -1
+    try:
+        reservoirs = parse_supply_column(
+            cached["records"], column, cached["width"]
+        )
+    except AllocationError as exc:
+        return render_template(
+            "error.html", message=str(exc), stage="供水分配"
+        ), 422
+
+    header_path = ""
+    if 0 < column <= len(cached.get("header_paths", [])):
+        header_path = cached["header_paths"][column - 1]
+
+    alloc_key = f"a{int(time.time() * 1000)}-{len(_FETCH_CACHE)}"
+    _cache_put(
+        alloc_key,
+        {
+            "reservoirs": reservoirs,
+            "result_key": result_key,
+            "url": cached["url"],
+            "column": column,
+            "header_path": header_path,
+            "last_rows": [],
+        },
+    )
+    return _render_allocate_input(alloc_key, _cache_get(alloc_key))
+
+
+@app.get("/allocate")
+def allocate_page():
+    """按会话 key 重回灌区录入页（保留上次提交内容）。"""
+    alloc_key = request.args.get("key", "")
+    cached = _cache_get(alloc_key)
+    if cached is None or "reservoirs" not in cached:
+        return render_template(
+            "error.html",
+            message="供水分配会话已过期，请从转换结果重新选择可供水量列。",
+            stage="供水分配",
+        ), 400
+    return _render_allocate_input(alloc_key, cached)
+
+
+@app.post("/allocate/solve")
+def allocate_solve():
+    """校验灌区录入并求字典序最大满足率的最优分配。"""
+    alloc_key = request.form.get("alloc_key", "")
+    cached = _cache_get(alloc_key)
+    if cached is None or "reservoirs" not in cached:
+        return render_template(
+            "error.html",
+            message="供水分配会话已过期，请从转换结果重新选择可供水量列。",
+            stage="供水分配",
+        ), 400
+
+    reservoirs = cached["reservoirs"]
+    rows = []
+    for k in request.form.getlist("didx"):
+        rows.append(
+            (
+                request.form.get(f"name_{k}", ""),
+                request.form.get(f"demand_{k}", ""),
+                request.form.getlist(f"src_{k}"),
+            )
+        )
+    prefill = [
+        {"name": n, "demand": d, "sources": list(s)} for (n, d, s) in rows
+    ]
+    try:
+        districts = validate_districts(rows, [r.name for r in reservoirs])
+    except AllocationError as exc:
+        return _render_allocate_input(
+            alloc_key, cached, error=str(exc), prefill=prefill
+        ), 400
+
+    # 保留本次录入，便于结果页「调整灌区重新求解」
+    cached["last_rows"] = [
+        {"name": d.name, "demand": str(d.demand), "sources": list(d.sources)}
+        for d in districts
+    ]
+    result = solve_allocation(reservoirs, districts)
+
+    district_rows = []
+    for i, d in enumerate(districts):
+        district_rows.append(
+            {
+                "name": d.name,
+                "demand": d.demand,
+                "sources_text": "、".join(d.sources) if d.sources else "（无水源）",
+                "no_source": not d.sources,
+                "rate": result.rates[i],
+                "received": result.received[i],
+                "gap": result.gaps[i],
+            }
+        )
+    matrix_rows = []
+    for r, reservoir in enumerate(reservoirs):
+        used = result.reservoir_used[r]
+        matrix_rows.append(
+            {
+                "name": reservoir.name,
+                "supply": reservoir.supply,
+                "cells": result.flows[r],
+                "used": used,
+                "left": Fraction(reservoir.supply) - used,
+            }
+        )
+    sorted_items = [
+        {"name": districts[i].name, "rate": rate}
+        for i, rate in result.sorted_rates
+    ]
+    return render_template(
+        "allocate_result.html",
+        alloc_key=alloc_key,
+        result_key=cached["result_key"],
+        source_url=cached["url"],
+        column=cached["column"],
+        header_path=cached["header_path"],
+        unit=UNIT,
+        districts=districts,
+        district_rows=district_rows,
+        matrix_rows=matrix_rows,
+        sorted_items=sorted_items,
+        total_supply=sum(r.supply for r in reservoirs),
+        total_demand=sum(d.demand for d in districts),
+        total_received=sum(result.received, Fraction(0)),
+        total_gap=sum(result.gaps, Fraction(0)),
     )
 
 

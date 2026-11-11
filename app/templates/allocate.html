@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}供水分配 · 灌区录入{% endblock %}
+{% block body %}
+<section class="card">
+  <h2>供水分配 · 水源清单</h2>
+  <p class="hint">
+    来源页：<a href="{{ source_url }}" target="_blank" rel="noopener" class="src-url">{{ source_url }}</a><br>
+    可供水量列：第 {{ column }} 列{% if header_path %}（<code>{{ header_path }}</code>）{% endif %}
+    · 单位统一为{{ unit }} · 共 {{ reservoirs|length }} 座水库（上限 6 座）
+  </p>
+  <div class="mini-scroll">
+    <table class="result-table">
+      <thead>
+        <tr><th>#</th><th>水库</th><th>可供水量（{{ unit }}）</th></tr>
+      </thead>
+      <tbody>
+        {% for r in reservoirs %}
+        <tr><td>{{ loop.index }}</td><td>{{ r.name }}</td><td>{{ r.supply }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>灌区需求录入（最多 {{ max_districts }} 个）</h2>
+  {% if error %}
+  <div class="error-box">
+    <span class="error-tag">校验失败</span>
+    <p>{{ error }}</p>
+  </div>
+  {% endif %}
+  <p class="hint">
+    需水量为正整数（{{ unit }}）；「可供水库」决定水只能沿哪些关系分配，
+    不勾选表示该灌区无水源——其满足率恒为 0，其余灌区仍会照常优化。
+  </p>
+  <form id="district-form" action="{{ url_for('allocate_solve') }}" method="post">
+    <input type="hidden" name="alloc_key" value="{{ alloc_key }}">
+    <div id="district-rows">
+      {% for row in initial_rows %}
+      {% set k = loop.index0 %}
+      <div class="district-row">
+        <input type="hidden" name="didx" value="{{ k }}">
+        <div class="dr-head">
+          <span class="dr-no">灌区 {{ loop.index }}</span>
+          <button type="button" class="dr-remove" title="删除该灌区">×</button>
+        </div>
+        <div class="dr-fields">
+          <label>灌区名称
+            <input type="text" name="name_{{ k }}" value="{{ row.name }}" required maxlength="40">
+          </label>
+          <label>需水量（{{ unit }}）
+            <input type="text" name="demand_{{ k }}" value="{{ row.demand }}"
+                   required inputmode="numeric" pattern="\d+" placeholder="正整数">
+          </label>
+        </div>
+        <div class="dr-srcs">
+          <span class="dr-srcs-label">可供水库：</span>
+          {% for r in reservoirs %}
+          <label class="src-check">
+            <input type="checkbox" name="src_{{ k }}" value="{{ r.name }}"
+                   {% if r.name in row.sources %}checked{% endif %}> {{ r.name }}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="table-actions">
+      <button type="button" class="btn" id="add-row">＋ 添加灌区</button>
+      <button type="button" class="btn ghost" id="fill-demo">填充演示灌区</button>
+      <button type="submit" class="btn primary">求解最优分配</button>
+      <a class="btn ghost" href="{{ url_for('preview', key=result_key) }}">← 返回转换结果</a>
+    </div>
+  </form>
+  <noscript><p class="hint">当前浏览器未启用 JavaScript：可填写上方已有灌区行并提交，但无法增删行。</p></noscript>
+</section>
+
+<template id="row-template">
+  <div class="district-row">
+    <input type="hidden" name="didx" value="__K__">
+    <div class="dr-head">
+      <span class="dr-no"></span>
+      <button type="button" class="dr-remove" title="删除该灌区">×</button>
+    </div>
+    <div class="dr-fields">
+      <label>灌区名称
+        <input type="text" name="name___K__" required maxlength="40">
+      </label>
+      <label>需水量（{{ unit }}）
+        <input type="text" name="demand___K__" required inputmode="numeric" pattern="\d+" placeholder="正整数">
+      </label>
+    </div>
+    <div class="dr-srcs">
+      <span class="dr-srcs-label">可供水库：</span>
+      {% for r in reservoirs %}
+      <label class="src-check">
+        <input type="checkbox" name="src___K__" value="{{ r.name }}"> {{ r.name }}
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+</template>
+
+<script>
+(function () {
+  var MAX = {{ max_districts }};
+  var RES = {{ reservoir_names | tojson }};
+  var rows = document.getElementById('district-rows');
+  var tpl = document.getElementById('row-template');
+  var addBtn = document.getElementById('add-row');
+  var next = {{ initial_rows | length }};
+
+  function renumber() {
+    var list = rows.querySelectorAll('.district-row');
+    for (var i = 0; i < list.length; i++) {
+      list[i].querySelector('.dr-no').textContent = '灌区 ' + (i + 1);
+    }
+    addBtn.disabled = list.length >= MAX;
+  }
+
+  function wireRow(row) {
+    row.querySelector('.dr-remove').addEventListener('click', function () {
+      row.remove();
+      renumber();
+    });
+  }
+
+  function addRow(data) {
+    if (rows.querySelectorAll('.district-row').length >= MAX) return;
+    var k = next++;
+    var html = tpl.innerHTML.split('__K__').join(String(k));
+    var wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    var row = wrap.firstElementChild;
+    if (data) {
+      row.querySelector('input[name="name_' + k + '"]').value = data.name;
+      row.querySelector('input[name="demand_' + k + '"]').value = data.demand;
+      var boxes = row.querySelectorAll('input[name="src_' + k + '"]');
+      for (var i = 0; i < boxes.length; i++) {
+        boxes[i].checked = data.src.indexOf(boxes[i].value) >= 0;
+      }
+    }
+    rows.appendChild(row);
+    wireRow(row);
+    renumber();
+  }
+
+  Array.prototype.forEach.call(
+    rows.querySelectorAll('.district-row'), wireRow);
+
+  addBtn.addEventListener('click', function () { addRow(null); });
+
+  document.getElementById('fill-demo').addEventListener('click', function () {
+    rows.innerHTML = '';
+    var demo = [
+      { name: '东风灌区', demand: 100, src: [RES[0], RES[1]].filter(Boolean) },
+      { name: '红旗灌区', demand: 80, src: [RES[1]].filter(Boolean) },
+      { name: '跃进灌区', demand: 60, src: [RES[2], RES[3]].filter(Boolean) },
+      { name: '山外灌区', demand: 40, src: [] }
+    ];
+    demo.forEach(addRow);
+  });
+
+  renumber();
+})();
+</script>
+{% endblock %}
